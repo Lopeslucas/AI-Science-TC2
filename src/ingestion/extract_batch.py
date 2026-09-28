@@ -14,26 +14,37 @@ TABLES = {
     "uf": {
         "source": f"{DATASET}.uf",
         "partition_column": "ano",
+        "extract_by_partition": False,
     },
     "municipio": {
         "source": f"{DATASET}.municipio",
         "partition_column": "ano",
+        "extract_by_partition": False,
     },
     "meta_alfabetizacao_brasil": {
         "source": f"{DATASET}.meta_alfabetizacao_brasil",
         "partition_column": "ano",
+        "extract_by_partition": False,
     },
     "meta_alfabetizacao_uf": {
         "source": f"{DATASET}.meta_alfabetizacao_uf",
         "partition_column": "ano",
+        "extract_by_partition": False,
     },
     "meta_alfabetizacao_municipio": {
         "source": f"{DATASET}.meta_alfabetizacao_municipio",
         "partition_column": "ano",
+        "extract_by_partition": False,
     },
     "dicionario": {
         "source": f"{DATASET}.dicionario",
         "partition_column": None,
+        "extract_by_partition": False,
+    },
+    "alunos": {
+        "source": f"{DATASET}.alunos",
+        "partition_column": "ano",
+        "extract_by_partition": True,
     },
 }
 
@@ -114,19 +125,143 @@ def ingest_table(table_name: str) -> None:
 
     print(f"\nIniciando ingestão: {table_name}")
 
-    df = extract_table(
-        source_table=config["source"]
-    )
+    if config["extract_by_partition"]:
+        partition_column = config["partition_column"]
 
-    print(f"Extraídos: {len(df)} registros")
+        partition_values = get_partition_values(
+            source_table=config["source"],
+            partition_column=partition_column,
+        )
 
-    upload_dataframe_to_s3(
-        df=df,
-        table_name=table_name,
-        partition_column=config["partition_column"],
-    )
+        total = 0
+
+        for partition_value in partition_values:
+            print(
+                f"\nExtraindo "
+                f"{partition_column}={partition_value}..."
+            )
+
+            df_partition = extract_partition(
+                source_table=config["source"],
+                partition_column=partition_column,
+                partition_value=partition_value,
+            )
+
+            total += len(df_partition)
+
+            upload_partition_to_s3(
+                df=df_partition,
+                table_name=table_name,
+                partition_column=partition_column,
+                partition_value=partition_value,
+            )
+
+            del df_partition
+
+        print(
+            f"\nTotal ingerido: {total} registros"
+        )
+
+    else:
+        df = extract_table(
+            source_table=config["source"]
+        )
+
+        print(
+            f"Extraídos: {len(df)} registros"
+        )
+
+        upload_dataframe_to_s3(
+            df=df,
+            table_name=table_name,
+            partition_column=config["partition_column"],
+        )
 
     print(f"Ingestão concluída: {table_name}")
+
+
+def get_partition_values(
+    source_table: str,
+    partition_column: str,
+) -> list:
+    client = bigquery.Client(project=GCP_PROJECT_ID)
+
+    query = f"""
+    SELECT DISTINCT {partition_column}
+    FROM `{source_table}`
+    WHERE {partition_column} IS NOT NULL
+    ORDER BY {partition_column}
+    """
+
+    df = client.query(query).to_dataframe()
+
+    return df[partition_column].tolist()
+
+
+def extract_partition(
+    source_table: str,
+    partition_column: str,
+    partition_value,
+) -> pd.DataFrame:
+    client = bigquery.Client(project=GCP_PROJECT_ID)
+
+    query = f"""
+    SELECT *
+    FROM `{source_table}`
+    WHERE {partition_column} = @partition_value
+    """
+
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter(
+                "partition_value",
+                "INT64",
+                int(partition_value),
+            )
+        ]
+    )
+
+    return client.query(
+        query,
+        job_config=job_config,
+    ).to_dataframe()
+
+
+def upload_partition_to_s3(
+    df: pd.DataFrame,
+    table_name: str,
+    partition_column: str,
+    partition_value,
+) -> None:
+    s3 = boto3.client("s3")
+
+    buffer = BytesIO()
+
+    df.to_parquet(
+        buffer,
+        index=False,
+        engine="pyarrow",
+        compression="snappy",
+    )
+
+    key = (
+        f"bronze/{table_name}/"
+        f"{partition_column}={partition_value}/"
+        f"{table_name}.parquet"
+    )
+
+    s3.put_object(
+        Bucket=AWS_BUCKET,
+        Key=key,
+        Body=buffer.getvalue(),
+    )
+
+    print(
+        f"{table_name} | "
+        f"{partition_column}={partition_value} | "
+        f"{len(df)} registros"
+    )
+
 
 
 if __name__ == "__main__":
