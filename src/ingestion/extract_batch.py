@@ -71,7 +71,14 @@ def upload_dataframe_to_s3(
         for partition_value, df_partition in df.groupby(partition_column):
             buffer = BytesIO()
 
-            df_partition.to_parquet(
+            # A coluna de partição NÃO deve ficar dentro do Parquet,
+            # pois ela já está representada no caminho:
+            # ano=2023/, ano=2024/, etc.
+            df_to_write = df_partition.drop(
+                columns=[partition_column]
+            )
+
+            df_to_write.to_parquet(
                 buffer,
                 index=False,
                 engine="pyarrow",
@@ -237,7 +244,13 @@ def upload_partition_to_s3(
 
     buffer = BytesIO()
 
-    df.to_parquet(
+    # A coluna de partição já está representada no caminho S3:
+    # ano=2023/, ano=2024/, etc.
+    df_to_write = df.drop(
+        columns=[partition_column]
+    )
+
+    df_to_write.to_parquet(
         buffer,
         index=False,
         engine="pyarrow",
@@ -261,7 +274,6 @@ def upload_partition_to_s3(
         f"{partition_column}={partition_value} | "
         f"{len(df)} registros"
     )
-
 
 
 if __name__ == "__main__":
