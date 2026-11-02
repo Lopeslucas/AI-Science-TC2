@@ -100,7 +100,10 @@ def read_parquet_from_s3(key: str) -> pd.DataFrame:
     )
 
 
-def get_s3_dataframe(table_name: str) -> pd.DataFrame:
+def get_s3_dataframe(
+    table_name: str,
+    partition_column: str | None,
+) -> pd.DataFrame:
     prefix = f"bronze/{table_name}/"
 
     parquet_files = list_s3_parquet_files(prefix)
@@ -115,6 +118,19 @@ def get_s3_dataframe(table_name: str) -> pd.DataFrame:
 
     for key in parquet_files:
         df = read_parquet_from_s3(key)
+
+        # Para tabelas particionadas, recupera o valor
+        # da partição a partir do caminho S3.
+        if partition_column:
+            partition_text = key.split(
+                f"{partition_column}="
+            )[1].split("/")[0]
+
+            # No nosso caso, ano é inteiro.
+            partition_value = int(partition_text)
+
+            df[partition_column] = partition_value
+
         dataframes.append(df)
 
     return pd.concat(
@@ -216,7 +232,8 @@ def validate_table(table_name: str) -> None:
     print("\nLendo Bronze no S3...")
 
     df_bronze = get_s3_dataframe(
-        table_name
+        table_name=table_name,
+        partition_column=config["partition_column"],
     )
 
     print(
@@ -386,7 +403,6 @@ def validate_large_table(
     print(f"\nOrigem total: {source_total}")
     print(f"Bronze total: {bronze_total}")
     print("Volume OK")
-
 
     
 if __name__ == "__main__":
